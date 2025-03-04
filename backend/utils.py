@@ -9,6 +9,7 @@ from database import SessionLocal
 from sqlalchemy.future import select
 
 async def run_ansible_playbook(playbook_name, auditorium_number, class_number=None, state=None):
+    playbook_path = f"./playbooks/{playbook_name}"
     extra_vars = f"auditorium_number={auditorium_number}"
     if class_number is not None:
         extra_vars += f" class={class_number}"
@@ -17,7 +18,7 @@ async def run_ansible_playbook(playbook_name, auditorium_number, class_number=No
 
     if os.getenv("MODE", "development") == "production":
         result = subprocess.run(
-            ["ansible-playbook", playbook_name, "-e", extra_vars],
+            ["ansible-playbook", playbook_path, "-e", extra_vars],
             capture_output=True,
             text=True
         )
