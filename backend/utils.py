@@ -2,36 +2,77 @@ import subprocess
 import asyncio
 import os
 import signal
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime
 from fastapi import HTTPException
 from models import AuditoriumState
 from database import SessionLocal
 from sqlalchemy.future import select
 
-async def run_ansible_playbook(playbook_name, auditorium_number, class_number=None, state=None):
-    playbook_path = f"./playbooks/{playbook_name}"
-    extra_vars = f"auditorium_number={auditorium_number}"
-    if class_number is not None:
-        extra_vars += f" class={class_number}"
-    if state is not None:
-        extra_vars += f" state={state}"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    if os.getenv("MODE", "development") == "production":
-        result = subprocess.run(
-            ["ansible-playbook", playbook_path, "-e", extra_vars],
-            capture_output=True,
-            text=True
+async def run_ansible_playbook(playbook_name, *, auditorium_number, class_number=None, state=None):
+    playbook_path = f"./playbooks/{playbook_name}"
+    
+    if not os.path.exists(playbook_path):
+        logging.error(f"Playbook {playbook_name} не найден по пути: {playbook_path}")
+        raise HTTPException(status_code=404, detail=f"Playbook {playbook_name} not found")
+
+    extra_vars = [f"auditorium_number={auditorium_number}"]
+    if class_number is not None:
+        extra_vars.append(f"class={class_number}")
+    if state is not None:
+        extra_vars.append(f"state={state}")
+    extra_vars_str = " ".join(extra_vars)
+
+    mode = os.getenv("MODE", "production")
+    logging.info(f"Запуск playbook: {playbook_name}, переменные: {extra_vars_str}, режим: {mode}")
+
+    if mode == "production":
+        logging.info("Используется реальный Ansible (production)")
+        
+        process = await asyncio.create_subprocess_exec(
+            "ansible-playbook", playbook_path, "-e", extra_vars_str,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-        if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"Ansible playbook failed: {result.stderr}")
-        return result.stdout
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            error_message = stderr.decode()
+            logging.error(f"Ошибка выполнения playbook {playbook_name}: {error_message}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ansible playbook failed: {error_message}"
+            )
+        
+        logging.info(f"Playbook {playbook_name} выполнен успешно: {stdout.decode()}")
+        return stdout.decode()
     else:
-        return f"Simulated running playbook {playbook_name} for auditorium {auditorium_number}"
+        logging.info("Режим разработки: имитация выполнения playbook'а")
+        return {
+            "status": "simulated",
+            "playbook": playbook_name,
+            "variables": {
+                "auditorium_number": auditorium_number,
+                "class": class_number,
+                "state": state
+            }
+        }
 
 async def shutdown():
-    print('Завершение работы сервера...')
-    await asyncio.sleep(0.1)
-    asyncio.get_event_loop().stop()
+    logging.info("Завершение работы сервера...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        logging.error(f"Ошибка при завершении задач")
+
+    logging.info("Все фоновые задачи завершены.")
+
 
 def signal_handler(sig, frame):
     asyncio.create_task(shutdown())
